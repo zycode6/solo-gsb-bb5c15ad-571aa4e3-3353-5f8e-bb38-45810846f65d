@@ -95,3 +95,31 @@ describe('buildMergedCues', () => {
     expect(issues.some((i) => i.kind === 'time-parse')).toBe(true);
   });
 });
+
+describe('智能断行结果应用', () => {
+  it('brokenText 覆盖输出文本', () => {
+    const groups = [group('g0', [0], [0])];
+    const st = resolved();
+    st.brokenText = '甲\n一';
+    st.brokenSource = '甲一';
+    const { cues, issues } = buildMergedCues(groups, [st], cuesA, cuesB);
+    expect(issues).toHaveLength(0);
+    expect(cues[0].text).toBe('甲\n一');
+  });
+
+  it('源文本改变后断行结果失效，回退当前原文', () => {
+    const groups = [group('g0', [0], [0])];
+    const st = resolved({ text: 'B' }); // 当前取 B（乙一），应用时记录的是 A（甲一）
+    st.brokenText = '甲\n一';
+    st.brokenSource = '甲一';
+    const { cues } = buildMergedCues(groups, [st], cuesA, cuesB);
+    expect(cues[0].text).toBe('乙一');
+  });
+
+  it('恢复（清空 brokenText）后输出原文', () => {
+    const groups = [group('g0', [0], [0])];
+    const st = resolved();
+    const { cues: before } = buildMergedCues(groups, [st], cuesA, cuesB);
+    expect(before[0].text).toBe('甲一');
+  });
+});

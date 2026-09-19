@@ -15,6 +15,7 @@ import { parseSrt, serializeSrt, type Cue } from './lib/srt';
 import { ExportPanel } from './components/ExportPanel';
 import { GroupCard } from './components/GroupCard';
 import { ImportPanel } from './components/ImportPanel';
+import { LineBreakPanel, type BreakUpdate } from './components/LineBreakPanel';
 import { StatsBar } from './components/StatsBar';
 import { Toolbar, type Filter } from './components/Toolbar';
 
@@ -46,6 +47,7 @@ export default function App() {
   const [filter, setFilter] = useState<Filter>('all');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [autoFix, setAutoFix] = useState(false);
+  const [view, setView] = useState<'resolve' | 'linebreak'>('resolve');
 
   const runAlign = (a: Cue[], b: Cue[]) => {
     setAligning(true);
@@ -58,6 +60,7 @@ export default function App() {
       setFilter('all');
       setVisibleCount(PAGE_SIZE);
       setAutoFix(false);
+      setView('resolve');
     }, 30);
   };
 
@@ -169,6 +172,38 @@ export default function App() {
   const unresolved = states.filter((s) => !s.resolved).length;
   const canExport = !!groups && unresolved === 0 && issues.length === 0 && finalCues.length > 0;
 
+  /** 组是否会进入合并结果（丢弃的单边组不参与断行）。 */
+  const kept = useMemo(
+    () =>
+      groups
+        ? groups.map((g, i) => {
+            const only = g.kind === 'A-only' || g.kind === 'B-only';
+            return !(only && !states[i].resolution.keep);
+          })
+        : [],
+    [groups, states],
+  );
+  const brokenCount = states.filter((s) => s.brokenText !== undefined).length;
+
+  const applyBreaks = (updates: BreakUpdate[]) => {
+    const byIndex = new Map(updates.map((u) => [u.gi, u]));
+    setStates((prev) =>
+      prev.map((s, i) => {
+        const u = byIndex.get(i);
+        return u ? { ...s, brokenText: u.text, brokenSource: u.source } : s;
+      }),
+    );
+  };
+
+  const restoreBreaks = (indices: number[]) => {
+    const set = new Set(indices);
+    setStates((prev) =>
+      prev.map((s, i) =>
+        set.has(i) ? { ...s, brokenText: undefined, brokenSource: undefined } : s,
+      ),
+    );
+  };
+
   const preview = useMemo(() => {
     if (!groups) return '';
     const full = serializeSrt(finalCues);
@@ -261,40 +296,73 @@ export default function App() {
           <div className="layout">
             <main className="main-col">
               <StatsBar groups={groups} states={states} />
-              <Toolbar
-                filter={filter}
-                counts={counts}
-                onFilter={(f) => {
-                  setFilter(f);
-                  setVisibleCount(PAGE_SIZE);
-                }}
-                onBulkText={bulkText}
-                onBulkTime={bulkTime}
-                onResolveSuggested={resolveSuggested}
-                onOnlyKeep={setOnlyKeep}
-              />
-              <div className="group-list">
-                {filtered.slice(0, visibleCount).map((gi) => (
-                  <GroupCard
-                    key={groups[gi].id}
-                    index={gi}
-                    group={groups[gi]}
-                    state={states[gi]}
-                    cuesA={cuesA}
-                    cuesB={cuesB}
-                    suggestion={suggestTextChoice(groups[gi], cuesA, cuesB)}
-                    onResolve={(patch) => updateResolution(gi, patch)}
-                  />
-                ))}
-                {filtered.length === 0 && (
-                  <div className="empty">当前筛选条件下没有对齐组。</div>
-                )}
-                {filtered.length > visibleCount && (
-                  <button className="btn more" onClick={() => setVisibleCount((v) => v + PAGE_SIZE)}>
-                    显示更多（剩余 {filtered.length - visibleCount} 组）
-                  </button>
-                )}
+              <div className="view-switch" role="tablist">
+                <button
+                  className={`vtab ${view === 'resolve' ? 'active' : ''}`}
+                  onClick={() => setView('resolve')}
+                >
+                  冲突解决
+                  {unresolved > 0 && <span className="vtab-badge">{unresolved}</span>}
+                </button>
+                <button
+                  className={`vtab ${view === 'linebreak' ? 'active' : ''}`}
+                  onClick={() => setView('linebreak')}
+                >
+                  智能断行
+                  {brokenCount > 0 && <span className="vtab-badge ok">{brokenCount}</span>}
+                </button>
               </div>
+              {view === 'resolve' ? (
+                <>
+                  <Toolbar
+                    filter={filter}
+                    counts={counts}
+                    onFilter={(f) => {
+                      setFilter(f);
+                      setVisibleCount(PAGE_SIZE);
+                    }}
+                    onBulkText={bulkText}
+                    onBulkTime={bulkTime}
+                    onResolveSuggested={resolveSuggested}
+                    onOnlyKeep={setOnlyKeep}
+                  />
+                  <div className="group-list">
+                    {filtered.slice(0, visibleCount).map((gi) => (
+                      <GroupCard
+                        key={groups[gi].id}
+                        index={gi}
+                        group={groups[gi]}
+                        state={states[gi]}
+                        cuesA={cuesA}
+                        cuesB={cuesB}
+                        suggestion={suggestTextChoice(groups[gi], cuesA, cuesB)}
+                        onResolve={(patch) => updateResolution(gi, patch)}
+                      />
+                    ))}
+                    {filtered.length === 0 && (
+                      <div className="empty">当前筛选条件下没有对齐组。</div>
+                    )}
+                    {filtered.length > visibleCount && (
+                      <button
+                        className="btn more"
+                        onClick={() => setVisibleCount((v) => v + PAGE_SIZE)}
+                      >
+                        显示更多（剩余 {filtered.length - visibleCount} 组）
+                      </button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <LineBreakPanel
+                  groups={groups}
+                  states={states}
+                  cuesA={cuesA}
+                  cuesB={cuesB}
+                  kept={kept}
+                  onApply={applyBreaks}
+                  onRestore={restoreBreaks}
+                />
+              )}
             </main>
 
             <ExportPanel

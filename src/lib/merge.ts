@@ -22,6 +22,33 @@ export interface GroupState {
   /** 是否已有明确决定（自动或人工） */
   resolved: boolean;
   resolution: Resolution;
+  /** 智能断行：已应用的整条输出文本（undefined 表示未应用） */
+  brokenText?: string;
+  /** 应用断行时的原始文本；与当前决定原文不一致即视为失效 */
+  brokenSource?: string;
+}
+
+/** 已应用的断行是否已失效（用户改了文本选择 / 自定义文本后失效，不进入导出）。 */
+export function isBrokenStale(
+  group: AlignGroup,
+  state: GroupState,
+  cuesA: Cue[],
+  cuesB: Cue[],
+): boolean {
+  if (state.brokenText === undefined) return false;
+  return state.brokenSource !== resolveGroupText(group, state.resolution, cuesA, cuesB).trim();
+}
+
+/** 某组在当前决定下合并出的原始文本（未应用智能断行）。 */
+export function resolveGroupText(
+  group: AlignGroup,
+  res: Resolution,
+  cuesA: Cue[],
+  cuesB: Cue[],
+): string {
+  if (res.text === 'custom') return res.customText.trim();
+  const useA = res.text === 'A' ? group.aIdx.length > 0 : group.bIdx.length === 0;
+  return mergedText(useA ? cuesA : cuesB, useA ? group.aIdx : group.bIdx);
 }
 
 export function mergedText(cues: Cue[], idxs: number[]): string {
@@ -109,6 +136,9 @@ export function buildMergedCues(
       const useA = res.text === 'A' ? g.aIdx.length > 0 : g.bIdx.length === 0;
       text = mergedText(useA ? cuesA : cuesB, useA ? g.aIdx : g.bIdx);
     }
+    // 应用已确认且未失效的智能断行结果（整条输出文本）
+    const broken = states[gi].brokenText;
+    if (broken !== undefined && !isBrokenStale(g, states[gi], cuesA, cuesB)) text = broken;
 
     let start = NaN;
     let end = NaN;
