@@ -12,11 +12,13 @@ import {
 } from './lib/merge';
 import { SAMPLE_A, SAMPLE_B } from './lib/samples';
 import { parseSrt, serializeSrt, type Cue } from './lib/srt';
+import { smartWrap, type WrapOptions } from './lib/wrap';
 import { ExportPanel } from './components/ExportPanel';
 import { GroupCard } from './components/GroupCard';
 import { ImportPanel } from './components/ImportPanel';
 import { StatsBar } from './components/StatsBar';
 import { Toolbar, type Filter } from './components/Toolbar';
+import { WrapPanel } from './components/WrapPanel';
 
 const PAGE_SIZE = 80;
 
@@ -47,6 +49,15 @@ export default function App() {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [autoFix, setAutoFix] = useState(false);
 
+  // 智能断行：视图切换、参数与逐条应用状态（key 为 groupIndex）
+  const [view, setView] = useState<'groups' | 'wrap'>('groups');
+  const [wrapOpts, setWrapOpts] = useState<WrapOptions>({
+    maxWidth: 42,
+    maxLines: 2,
+    lockManualBreaks: true,
+  });
+  const [wrapApplied, setWrapApplied] = useState<ReadonlySet<number>>(new Set());
+
   const runAlign = (a: Cue[], b: Cue[]) => {
     setAligning(true);
     // 让出一帧以渲染“对齐中”状态，再执行同步计算
@@ -58,6 +69,8 @@ export default function App() {
       setFilter('all');
       setVisibleCount(PAGE_SIZE);
       setAutoFix(false);
+      setView('groups');
+      setWrapApplied(new Set());
     }, 30);
   };
 
@@ -82,6 +95,8 @@ export default function App() {
   const reset = () => {
     setGroups(null);
     setStates([]);
+    setView('groups');
+    setWrapApplied(new Set());
   };
 
   const updateResolution = (gi: number, patch: Partial<Resolution>) => {
@@ -150,9 +165,53 @@ export default function App() {
     () => (groups ? buildMergedCues(groups, states, cuesA, cuesB) : null),
     [groups, states, cuesA, cuesB],
   );
+
+  // 智能断行：对每条合并结果按当前参数试算；已应用且可满足限制的条目使用断行文本
+  const wrapResults = useMemo(
+    () => (merged ? merged.cues.map((c) => smartWrap(c.text, wrapOpts)) : []),
+    [merged, wrapOpts],
+  );
+  const wrappedCues = useMemo(() => {
+    if (!merged) return [];
+    return merged.cues.map((c, i) => {
+      const r = wrapResults[i];
+      return r.ok && wrapApplied.has(c.groupIndex) ? { ...c, text: r.text } : c;
+    });
+  }, [merged, wrapResults, wrapApplied]);
+  const wrapStats = useMemo(() => {
+    let appliedCount = 0;
+    let failed = 0;
+    if (merged) {
+      merged.cues.forEach((c, i) => {
+        const r = wrapResults[i];
+        if (!r.ok) failed++;
+        else if (r.changed && wrapApplied.has(c.groupIndex)) appliedCount++;
+      });
+    }
+    return { appliedCount, failed };
+  }, [merged, wrapResults, wrapApplied]);
+
+  const applyWrap = (gi: number) => setWrapApplied((prev) => new Set(prev).add(gi));
+  const restoreWrap = (gi: number) =>
+    setWrapApplied((prev) => {
+      const next = new Set(prev);
+      next.delete(gi);
+      return next;
+    });
+  const applyAllWrap = () => {
+    if (!merged) return;
+    const next = new Set<number>();
+    merged.cues.forEach((c, i) => {
+      const r = wrapResults[i];
+      if (r.ok && r.changed) next.add(c.groupIndex);
+    });
+    setWrapApplied(next);
+  };
+  const restoreAllWrap = () => setWrapApplied(new Set());
+
   const finalCues = useMemo(
-    () => (merged ? (autoFix ? autoFixTimes(merged.cues) : merged.cues) : []),
-    [merged, autoFix],
+    () => (autoFix ? autoFixTimes(wrappedCues) : wrappedCues),
+    [wrappedCues, autoFix],
   );
   const issues = useMemo(
     () =>
@@ -261,40 +320,72 @@ export default function App() {
           <div className="layout">
             <main className="main-col">
               <StatsBar groups={groups} states={states} />
-              <Toolbar
-                filter={filter}
-                counts={counts}
-                onFilter={(f) => {
-                  setFilter(f);
-                  setVisibleCount(PAGE_SIZE);
-                }}
-                onBulkText={bulkText}
-                onBulkTime={bulkTime}
-                onResolveSuggested={resolveSuggested}
-                onOnlyKeep={setOnlyKeep}
-              />
-              <div className="group-list">
-                {filtered.slice(0, visibleCount).map((gi) => (
-                  <GroupCard
-                    key={groups[gi].id}
-                    index={gi}
-                    group={groups[gi]}
-                    state={states[gi]}
-                    cuesA={cuesA}
-                    cuesB={cuesB}
-                    suggestion={suggestTextChoice(groups[gi], cuesA, cuesB)}
-                    onResolve={(patch) => updateResolution(gi, patch)}
-                  />
-                ))}
-                {filtered.length === 0 && (
-                  <div className="empty">当前筛选条件下没有对齐组。</div>
-                )}
-                {filtered.length > visibleCount && (
-                  <button className="btn more" onClick={() => setVisibleCount((v) => v + PAGE_SIZE)}>
-                    显示更多（剩余 {filtered.length - visibleCount} 组）
-                  </button>
-                )}
+              <div className="tabs view-tabs">
+                <button
+                  className={`tab ${view === 'groups' ? 'active' : ''}`}
+                  onClick={() => setView('groups')}
+                >
+                  对齐分组
+                  <span className="tab-count">{groups.length}</span>
+                </button>
+                <button
+                  className={`tab ${view === 'wrap' ? 'active' : ''}`}
+                  onClick={() => setView('wrap')}
+                >
+                  智能断行
+                  <span className="tab-count">{wrapStats.appliedCount}</span>
+                </button>
               </div>
+              {view === 'groups' ? (
+                <>
+                  <Toolbar
+                    filter={filter}
+                    counts={counts}
+                    onFilter={(f) => {
+                      setFilter(f);
+                      setVisibleCount(PAGE_SIZE);
+                    }}
+                    onBulkText={bulkText}
+                    onBulkTime={bulkTime}
+                    onResolveSuggested={resolveSuggested}
+                    onOnlyKeep={setOnlyKeep}
+                  />
+                  <div className="group-list">
+                    {filtered.slice(0, visibleCount).map((gi) => (
+                      <GroupCard
+                        key={groups[gi].id}
+                        index={gi}
+                        group={groups[gi]}
+                        state={states[gi]}
+                        cuesA={cuesA}
+                        cuesB={cuesB}
+                        suggestion={suggestTextChoice(groups[gi], cuesA, cuesB)}
+                        onResolve={(patch) => updateResolution(gi, patch)}
+                      />
+                    ))}
+                    {filtered.length === 0 && (
+                      <div className="empty">当前筛选条件下没有对齐组。</div>
+                    )}
+                    {filtered.length > visibleCount && (
+                      <button className="btn more" onClick={() => setVisibleCount((v) => v + PAGE_SIZE)}>
+                        显示更多（剩余 {filtered.length - visibleCount} 组）
+                      </button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <WrapPanel
+                  cues={merged?.cues ?? []}
+                  results={wrapResults}
+                  applied={wrapApplied}
+                  options={wrapOpts}
+                  onOptions={setWrapOpts}
+                  onApply={applyWrap}
+                  onRestore={restoreWrap}
+                  onApplyAll={applyAllWrap}
+                  onRestoreAll={restoreAllWrap}
+                />
+              )}
             </main>
 
             <ExportPanel
@@ -305,6 +396,8 @@ export default function App() {
               autoFix={autoFix}
               onAutoFix={setAutoFix}
               cueCount={finalCues.length}
+              wrapApplied={wrapStats.appliedCount}
+              wrapFailed={wrapStats.failed}
               preview={preview}
               canExport={canExport}
               onExport={() => download('merged.srt', '\uFEFF' + serializeSrt(finalCues))}

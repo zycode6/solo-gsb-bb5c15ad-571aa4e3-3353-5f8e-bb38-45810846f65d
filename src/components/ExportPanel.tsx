@@ -8,6 +8,10 @@ interface ExportPanelProps {
   autoFix: boolean;
   onAutoFix(v: boolean): void;
   cueCount: number;
+  /** 已应用智能断行的条数 */
+  wrapApplied: number;
+  /** 无法满足断行限制、保持原文的条数 */
+  wrapFailed: number;
   preview: string;
   canExport: boolean;
   onExport(): void;
@@ -38,6 +42,11 @@ export function ExportPanel(props: ExportPanelProps) {
         <li className="pass">
           <span className="check-ic">✓</span>
           输出 {props.cueCount} 条字幕（导出时从 1 重新编号）
+        </li>
+        <li className={props.wrapFailed === 0 ? 'pass' : 'warn'}>
+          <span className="check-ic">{props.wrapFailed === 0 ? '✓' : '!'}</span>
+          智能断行：已应用 {props.wrapApplied} 条
+          {props.wrapFailed > 0 && <em>（{props.wrapFailed} 条无法满足限制，保持原文）</em>}
         </li>
       </ul>
 
